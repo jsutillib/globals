@@ -16,8 +16,8 @@
 
 (function(exports, document) {
     "use strict";
-    if (exports.jsutils === undefined) {
-        exports.jsutils = {};
+    if (exports.jsutillib === undefined) {
+        exports.jsutillib = {};
     }
 
     function is_proxy(p) {
@@ -146,7 +146,7 @@
     }
 
     /** Original snip of code from https://stackoverflow.com/a/69459844/14699733 */
-    let VariableListener = (original, options = {}) => {
+    let WatchedVariable = (original, options = {}) => {
         let defaults = {
             listenonchildren: true,
             eventtarget: [ window ],
@@ -154,7 +154,7 @@
             cloneobjects: false,
             convertproperties: true
         };
-        let settings = jsutils.merge(defaults, options);
+        let settings = jsutillib.merge(defaults, options);
         if (!Array.isArray(settings.eventtarget)) {
             settings.eventtarget = [ settings.eventtarget ];
         }
@@ -170,20 +170,20 @@
                         //   object (e.g. j = {a:'a',b:'b'}; _GLOBALS.j = j; j.a = 'c'; would cause _GLOBALS.j.a to 
                         //   be 'c' but we did not catch the modification).
                         // Instead, we clone the object and use the clone as the watched object.
-                        tranformfnc = jsutils.clone;
+                        tranformfnc = jsutillib.clone;
                     }
 
-                    value = jsutils.processprops(value, function(x) {
+                    value = jsutillib.processprops(value, function(x) {
                         // TODO: not sure what to do with objects that are proxies (cloning or not)
 
                         // If it is an array, we'll need to convert each of the elements of the array
                         let mychildren = [];
                         if (Array.isArray(x)) {
-                            x = x.map((y) => VariableListener(tranformfnc(y), settings));
+                            x = x.map((y) => WatchedVariable(tranformfnc(y), settings));
                             x.forEach(y => mychildren.push(y.listener));
                         }
 
-                        let clonedprop = convertobject(tranformfnc(x), settings); //VariableListener(tranformfnc(x), settings);
+                        let clonedprop = convertobject(tranformfnc(x), settings); //WatchedVariable(tranformfnc(x), settings);
 
                         if (clonedprop.is_proxy !== undefined)
                             children.push(clonedprop.listener);
@@ -196,7 +196,7 @@
                 }
 
                 // Now create the listener for the variable prior to setting it in the target
-                value = VariableListener(value, settings);
+                value = WatchedVariable(value, settings);
 
                 // Finally set the parents to the listeners
                 value.listener.__parent = proxy;
@@ -228,7 +228,7 @@
                         return listener;
                     case "value":
                         return function() {
-                            return jsutils.clone(target, function(x) {
+                            return jsutillib.clone(target, function(x) {
                                 if (is_proxy(x)) {
                                     return x.object();
                                 } 
@@ -273,6 +273,6 @@
 
         return proxy;
     }
-    exports._GLOBALS = VariableListener({});
-    exports.jsutils.VariableListener = VariableListener;
+    exports._GLOBALS = WatchedVariable({});
+    exports.jsutillib.WatchedVariable = WatchedVariable;
 })(window, document);

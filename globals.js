@@ -16,8 +16,8 @@
 
 (function(exports, document) {
     "use strict";
-    if (exports.jsutils === undefined) {
-        exports.jsutils = {};
+    if (exports.jsutillib === undefined) {
+        exports.jsutillib = {};
     }
     function is_proxy(p) {
         return typeof p === "object" && p.is_proxy === true;
@@ -114,7 +114,7 @@
             });
         }
     }
-    let VariableListener = (original, options = {}) => {
+    let WatchedVariable = (original, options = {}) => {
         let defaults = {
             listenonchildren: true,
             eventtarget: [ window ],
@@ -122,7 +122,7 @@
             cloneobjects: false,
             convertproperties: true
         };
-        let settings = jsutils.merge(defaults, options);
+        let settings = jsutillib.merge(defaults, options);
         if (!Array.isArray(settings.eventtarget)) {
             settings.eventtarget = [ settings.eventtarget ];
         }
@@ -132,12 +132,12 @@
                 if (settings.convertproperties) {
                     let tranformfnc = x => x;
                     if (settings.cloneobjects) {
-                        tranformfnc = jsutils.clone;
+                        tranformfnc = jsutillib.clone;
                     }
-                    value = jsutils.processprops(value, function(x) {
+                    value = jsutillib.processprops(value, function(x) {
                         let mychildren = [];
                         if (Array.isArray(x)) {
-                            x = x.map(y => VariableListener(tranformfnc(y), settings));
+                            x = x.map(y => WatchedVariable(tranformfnc(y), settings));
                             x.forEach(y => mychildren.push(y.listener));
                         }
                         let clonedprop = convertobject(tranformfnc(x), settings);
@@ -148,7 +148,7 @@
                         return clonedprop;
                     }, settings.cloneobjects);
                 }
-                value = VariableListener(value, settings);
+                value = WatchedVariable(value, settings);
                 value.listener.__parent = proxy;
                 children.forEach(child => {
                     child.__parent = value;
@@ -171,7 +171,7 @@
 
                   case "value":
                     return function() {
-                        return jsutils.clone(target, function(x) {
+                        return jsutillib.clone(target, function(x) {
                             if (is_proxy(x)) {
                                 return x.object();
                             }
@@ -208,6 +208,6 @@
         });
         return proxy;
     };
-    exports._GLOBALS = VariableListener({});
-    exports.jsutils.VariableListener = VariableListener;
+    exports._GLOBALS = WatchedVariable({});
+    exports.jsutillib.WatchedVariable = WatchedVariable;
 })(window, document);
