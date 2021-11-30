@@ -14,24 +14,29 @@
    limitations under the License.
 */
 
-(function(exports, document) {
+(function(exports) {
     "use strict";
-    if (exports.jsutillib === undefined) {
-        exports.jsutillib = {};
+    if (exports.jsutilslib === undefined) {
+        exports.jsutilslib = {};
     }
     function is_proxy(p) {
-        return typeof p === "object" && p.is_proxy === true;
+        return typeof p === "object" && p.is_proxy !== undefined;
     }
     class ListenerController {
-        static subscriptions = {};
-        constructor(proxy, target, settings) {
-            this.__proxy = proxy;
-            this.__target = target;
+        constructor(settings, subscriptions) {
+            this.__subscriptions = subscriptions;
             this.__settings = Object.assign({}, settings);
             this.__event_listeners = [];
             this.__parent = null;
         }
+        set_proxy(proxy, target) {
+            this.__proxy = proxy;
+            this.__target = target;
+        }
         __fire_events(name, value, suffix = "") {
+            if (this.__proxy === null) {
+                return false;
+            }
             if (is_proxy(name)) {
                 for (let prop in this.__target) {
                     if (this.__target[prop] === name) {
@@ -40,16 +45,6 @@
                     }
                 }
             }
-            let e = new CustomEvent(this.__settings.eventtype, {
-                detail: {
-                    name: name,
-                    value: value
-                }
-            });
-            this.dispatchEvent(e);
-            this.__settings.eventtarget.forEach(et => {
-                et.dispatchEvent(e);
-            });
             let varname = name;
             if (this.__parent !== null) {
                 varname = this.__parent.listener.__fire_events(this.__proxy, undefined, `.${name}${suffix}`);
@@ -80,88 +75,97 @@
             });
         }
         notify(varname, value, from) {
-            for (let k in ListenerController.subscriptions) {
-                let subscription = ListenerController.subscriptions[k];
-                if (subscription.re.test(varname)) {
-                    subscription.callbacks.forEach(sub => {
-                        sub(varname, value, from);
-                    });
+            let e = new CustomEvent(this.__settings.eventtype, {
+                detail: {
+                    varname: varname,
+                    value: value,
+                    from: from
+                }
+            });
+            this.dispatchEvent(e);
+            this.__settings.eventtarget.forEach(et => {
+                et.dispatchEvent(e);
+            });
+            let subscriptions = this.get_parent_subscriptions();
+            if (!e.cancelBubble) {
+                for (let k in subscriptions) {
+                    let subscription = subscriptions[k];
+                    if (subscription.re.test(varname)) {
+                        subscription.callbacks.forEach(sub => {
+                            sub(varname, value, from);
+                        });
+                    }
                 }
             }
+        }
+        get_parent_subscriptions() {
+            if (this.__parent === null) {
+                return this.__subscriptions;
+            }
+            return Object.assign({}, this.__subscriptions, this.__parent.listener.get_parent_subscriptions());
         }
         listen(varnames, eventHandler) {
             if (!Array.isArray(varnames)) {
                 varnames = [ varnames ];
             }
             varnames.forEach(function(varname) {
-                if (ListenerController.subscriptions[varname] === undefined) {
+                if (this.__subscriptions[varname] === undefined) {
                     let re = varname.replace(".", "\\.").replace("*", ".*").replace("?", "[^.]*");
                     re = `^${re}$`;
-                    ListenerController.subscriptions[varname] = {
+                    this.__subscriptions[varname] = {
                         re: new RegExp(re),
                         callbacks: []
                     };
                 }
-                ListenerController.subscriptions[varname].callbacks.push(eventHandler);
-            });
+                this.__subscriptions[varname].callbacks.push(eventHandler);
+            }.bind(this));
         }
         unlisten(varname, eventHandler) {
-            if (ListenerController.subscriptions[varname] === undefined) {
+            if (this.__subscriptions[varname] === undefined) {
                 return;
             }
-            ListenerController.subscriptions[varname].callbacks.filter(function(e) {
+            this.__subscriptions[varname].callbacks.filter(function(e) {
                 return e !== eventHandler;
             });
         }
     }
-    let WatchedVariable = (original, options = {}) => {
+    let WatchedObject = (original, options = {}) => {
+        if (typeof original !== "object") {
+            return original;
+        }
         let defaults = {
+            propertiesdepth: 0,
             listenonchildren: true,
             eventtarget: [ window ],
-            eventtype: "update-variable",
+            eventtype: "watch",
             cloneobjects: false,
             convertproperties: true
         };
-        let settings = jsutillib.merge(defaults, options);
+        let settings = jsutilslib.merge(defaults, options);
         if (!Array.isArray(settings.eventtarget)) {
             settings.eventtarget = [ settings.eventtarget ];
         }
-        function convertobject(value, settings) {
-            if (typeof value === "object") {
-                let children = [];
-                if (settings.convertproperties) {
-                    let tranformfnc = x => x;
-                    if (settings.cloneobjects) {
-                        tranformfnc = jsutillib.clone;
-                    }
-                    value = jsutillib.processprops(value, function(x) {
-                        let mychildren = [];
-                        if (Array.isArray(x)) {
-                            x = x.map(y => WatchedVariable(tranformfnc(y), settings));
-                            x.forEach(y => mychildren.push(y.listener));
-                        }
-                        let clonedprop = convertobject(tranformfnc(x), settings);
-                        if (clonedprop.is_proxy !== undefined) children.push(clonedprop.listener);
-                        mychildren.forEach(child => {
-                            child.__parent = clonedprop;
-                        });
-                        return clonedprop;
-                    }, settings.cloneobjects);
-                }
-                value = WatchedVariable(value, settings);
-                value.listener.__parent = proxy;
-                children.forEach(child => {
-                    child.__parent = value;
-                });
-            } else {}
-            return value;
+        let subscriptions = {};
+        let listener = new ListenerController(settings, subscriptions);
+        let children = [];
+        if (settings.cloneobjects) {
+            original = jsutilslib.clone(original);
         }
-        let listener = null;
+        if (settings.listenonchildren) {
+            function convertproperty(x) {
+                let clonedprop = WatchedObject(x, settings);
+                if (clonedprop.is_proxy !== undefined) children.push(clonedprop.listener);
+                return clonedprop;
+            }
+            if (Array.isArray(original)) {
+                original = original.map(convertproperty);
+            } else {
+                jsutilslib.processprops(original, convertproperty);
+            }
+        }
         let proxy = new Proxy(original, {
             get(target, name, receiver) {
-                if (listener === null) {
-                    listener = new ListenerController(proxy, target, settings);
-                }
+                listener.set_proxy(proxy, target);
                 switch (name) {
                   case "is_proxy":
                     return true;
@@ -171,7 +175,7 @@
 
                   case "value":
                     return function() {
-                        return jsutillib.clone(target, function(x) {
+                        return jsutilslib.clone(target, function(x) {
                             if (is_proxy(x)) {
                                 return x.object();
                             }
@@ -191,23 +195,22 @@
                 return rv;
             },
             set(target, name, value, receiver) {
-                if (listener === null) {
-                    listener = new ListenerController(proxy, target, settings);
-                }
+                listener.set_proxy(proxy, target);
                 let reserved = [ "value", "listener", "is_proxy", "listen", "unlisten", "addEventListener", "removeEventListener", "dispatchEvent" ].includes(name);
                 if (reserved) {
                     throw new Exception("invalid keyword");
                 }
-                if (settings.listenonchildren) {
-                    value = convertobject(value, settings);
-                }
+                value = WatchedObject(value, settings);
                 let retval = Reflect.set(target, name, value, receiver);
                 listener.__fire_events(name, value);
                 return retval;
             }
         });
+        children.forEach(child => {
+            child.__parent = proxy;
+        });
         return proxy;
     };
-    exports._GLOBALS = WatchedVariable({});
-    exports.jsutillib.WatchedVariable = WatchedVariable;
-})(window, document);
+    exports.$watched = WatchedObject({});
+    exports.jsutilslib.WatchedObject = WatchedObject;
+})(window);

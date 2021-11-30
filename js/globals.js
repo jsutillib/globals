@@ -14,32 +14,46 @@
    limitations under the License.
 */
 
-(function(exports, document) {
+(function(exports) {
     "use strict";
-    if (exports.jsutillib === undefined) {
-        exports.jsutillib = {};
+    if (exports.jsutilslib === undefined) {
+        exports.jsutilslib = {};
     }
 
+    /** Function that returns true if an object is a proxy
+     * @param {*} obj the object to check
+     * @returns true if the object is a proxy
+     */
     function is_proxy(p) {
-        return (typeof p === 'object') && (p.is_proxy === true);
+        return (typeof p === 'object') && (p.is_proxy !== undefined);
     }
 
     /**
-     * This is a class used to manage the events for the proxy objects. This should be a private class that should not be used directly
+     * Class used to manage the events for the proxy objects. This should be a private class that should not be used directly
      */
     class ListenerController {
 
-        static subscriptions = {};
+        constructor(settings, subscriptions) {
+            this.__subscriptions = subscriptions;
 
-        constructor(proxy, target, settings) {
-            this.__proxy = proxy;
-            this.__target = target;
+            // Duplicate the settings to avoid modifying the original settings
             this.__settings = Object.assign({}, settings);
             this.__event_listeners = [];
             this.__parent = null;
         }
 
+        // Sets the value for the proxy object and the target, to enable firing events
+        set_proxy(proxy, target) {
+            this.__proxy = proxy;
+            this.__target = target;
+        }
+
+        // This function is used to "fire" the events for the proxy object: both the callbacks for the watched variables and the events for the objects in the DOM
+        //   This function is only for internal purposes (also the class)
         __fire_events(name, value, suffix = "") {
+            if (this.__proxy === null) {
+                return false;
+            }
             // If the name is a proxy instead of a variable, we'll try to get which one is it
             //   ** this is a workaround for internal purposes
             if (is_proxy(name)) {
@@ -50,21 +64,7 @@
                     }
                 }
             }
-            /*
-            if (is_proxy(value)) {
-                value = value.object();
-            }
-            */
-            let e = new CustomEvent(this.__settings.eventtype, {
-                detail: { name, value }
-            });
-            this.dispatchEvent(e);
-            this.__settings.eventtarget.forEach(et => {
-                et.dispatchEvent(e);
-            });
-
             // Now we'll get the FQN of the variable and fire the events for it
-            //let vartree = `${name}${suffix}`;
             let varname = name;
 
             // The idea is to fire the events from the top-level proxy, so if this proxy has a parent, we'll wait until the parent is done and returns
@@ -73,10 +73,13 @@
                 varname = this.__parent.listener.__fire_events(this.__proxy, undefined, `.${name}${suffix}`);
                 varname = `${varname}.${name}`;
             }
+
             this.notify(varname, value, `${name}${suffix}`);
             return varname;
         }
 
+        // Add functions to the listener so that it can act as an event dispatcher 
+        //  (other objects may be subscribed to these events).
         addEventListener(type, eventHandler) {
             var listener = {};
             listener.type = type;
@@ -101,17 +104,48 @@
             });
         }
 
+        // This function is used to notify the listeners of the proxy object that a variable has changed
+        //   The event will be dispatched first, and then the subscriptions
         notify(varname, value, from) {
-            for (let k in ListenerController.subscriptions) {
-                let subscription = ListenerController.subscriptions[k];
-                if (subscription.re.test(varname)) {
-                    subscription.callbacks.forEach(sub => {
-                        sub(varname, value, from);
-                    });
+
+            // We'll create a custom event and will dispatch it to any of the dispachers set by the user in the settings
+            //  and to this object also (first to this object)
+            let e = new CustomEvent(this.__settings.eventtype, {
+                detail: { varname, value, from }
+            });
+            this.dispatchEvent(e);
+            this.__settings.eventtarget.forEach(et => {
+                et.dispatchEvent(e);
+            });
+
+            // We'll check the subscriptions of this object and the parent object (because the properties build a
+            //   tree of objects, and subscriptions may be defined for each part of the tree)
+            let subscriptions = this.get_parent_subscriptions();
+
+            if (!e.cancelBubble) {
+                // If any of the subscriptions match the var name, we'll fire the appropriate callback
+                for (let k in subscriptions) {
+                    let subscription = subscriptions[k];
+                    if (subscription.re.test(varname)) {
+                        subscription.callbacks.forEach(sub => {
+                            sub(varname, value, from);
+                        });
+                    }
                 }
             }
         }
 
+        // Get the subscriptions of the parent object (if any), combined with the subscriptions of this object
+        get_parent_subscriptions() {
+            if (this.__parent === null) {
+                return this.__subscriptions;
+            }
+            return Object.assign({}, this.__subscriptions, this.__parent.listener.get_parent_subscriptions());
+        }
+
+        // Adds a listener for the variables of the object. The listener will be notified when the variable changes
+        // @param varname the name of the variable to watch
+        // @param eventHandler the callback to call when the variable changes
         listen(varnames, eventHandler) {
             // TODO: support for listening for variables that are not created, yet
             //   e.g. listen to pdf.pages[0].text, but pdf.pages is not set yet; then, when it is set, fire the events
@@ -122,103 +156,108 @@
                 varnames = [varnames];
             }
             varnames.forEach(function (varname) {
-                if (ListenerController.subscriptions[varname] === undefined) {
+                if (this.__subscriptions[varname] === undefined) {
 
                     let re = varname.replace(".", "\\.").replace("*", ".*").replace("?", "[^.]*");
                     re = `^${re}$`
 
-                    ListenerController.subscriptions[varname] = {
+                    this.__subscriptions[varname] = {
                         re: new RegExp(re),
                         callbacks: []
                     };
                 }
-                ListenerController.subscriptions[varname].callbacks.push(eventHandler);
-            });
+                this.__subscriptions[varname].callbacks.push(eventHandler);
+            }.bind(this));
         }
+        // Stops listening for the variables of the object. The listener will no longer be notified when the variable changes
+        // @param varname the name of the variable to stop watching
+        // @param eventHandler the callback to call when the variable changes
         unlisten(varname, eventHandler) {
-            if (ListenerController.subscriptions[varname] === undefined) {
+            if (this.__subscriptions[varname] === undefined) {
                 return;
             }
-            ListenerController.subscriptions[varname].callbacks.filter(function(e) {
+            this.__subscriptions[varname].callbacks.filter(function(e) {
                 return e !== eventHandler;
             });
         }
     }
 
-    /** Original snip of code from https://stackoverflow.com/a/69459844/14699733 */
-    let WatchedVariable = (original, options = {}) => {
+    /**
+     * Set the function to create the proxy objects. 
+     *   - Original procedure from from https://stackoverflow.com/a/69459844/14699733 
+     */
+    let WatchedObject = (original, options = {}) => {
+        // Simple variables cannot be proxied
+        if (typeof original !== "object") {
+            return original;
+        }
+
+        // Default values for settings
         let defaults = {
+            propertiesdepth: 0,
             listenonchildren: true,
             eventtarget: [ window ],
-            eventtype: 'update-variable',
+            eventtype: 'watch',
             cloneobjects: false,
             convertproperties: true
         };
-        let settings = jsutillib.merge(defaults, options);
+
+        // Get the settings for this proxy
+        let settings = jsutilslib.merge(defaults, options);
         if (!Array.isArray(settings.eventtarget)) {
             settings.eventtarget = [ settings.eventtarget ];
         }
-        function convertobject(value, settings) {
-            if (typeof value === "object") {
-                let children = [];
 
-                if (settings.convertproperties) {
-                    let tranformfnc = (x) => x;
-                    if (settings.cloneobjects) {
-                        // We'll clone the value, because we just don't want to modify the original object nor
-                        //   getting the properties of the watched object modified because of modifying the original 
-                        //   object (e.g. j = {a:'a',b:'b'}; _GLOBALS.j = j; j.a = 'c'; would cause _GLOBALS.j.a to 
-                        //   be 'c' but we did not catch the modification).
-                        // Instead, we clone the object and use the clone as the watched object.
-                        tranformfnc = jsutillib.clone;
-                    }
-
-                    value = jsutillib.processprops(value, function(x) {
-                        // TODO: not sure what to do with objects that are proxies (cloning or not)
-
-                        // If it is an array, we'll need to convert each of the elements of the array
-                        let mychildren = [];
-                        if (Array.isArray(x)) {
-                            x = x.map((y) => WatchedVariable(tranformfnc(y), settings));
-                            x.forEach(y => mychildren.push(y.listener));
-                        }
-
-                        let clonedprop = convertobject(tranformfnc(x), settings); //WatchedVariable(tranformfnc(x), settings);
-
-                        if (clonedprop.is_proxy !== undefined)
-                            children.push(clonedprop.listener);
-
-                        // And if this element has children, we'll need to set this object as their parent
-                        mychildren.forEach(child => { child.__parent = clonedprop; });
-
-                        return clonedprop;
-                    }, settings.cloneobjects);
-                }
-
-                // Now create the listener for the variable prior to setting it in the target
-                value = WatchedVariable(value, settings);
-
-                // Finally set the parents to the listeners
-                value.listener.__parent = proxy;
-                children.forEach(child => { child.__parent = value; });
-            } else {
-            }
-            return value;
-        }
+        // Prepare the subscriptions for this call
+        let subscriptions = {};
 
         // Class Proxy cannot be extended, so we are using a workaround by using helper object which is scoped
         //   to the function that creates the Proxy (at the end is somehow the same than extending the class,
         //   except for the thing that we need to keep track of the methods that we wanted to be added to the
         //   proxy object and proxy them to the helper object (i.e. the listener object))
-        let listener = null;
+        let listener = new ListenerController(settings, subscriptions);
+
+        // In the next phases, we are converting the object, according to the settings (i.e. clone, )
+
+        // Let's prepare an array for the eventual properties that may have been converted into WatchedObjects,
+        //   so that we can set the parent for them. We cannot set the parent because the object is not yet
+        //   created, when the properties are being converted.
+        //
+        // If we tried to convert the properties later, the events may be fired during the conversion,
+        let children = [];
+            
+        // If needed, we'll clone the object
+        if (settings.cloneobjects) {
+            original = jsutilslib.clone(original);
+        }
+
+        // If we are listening on children, we'll convert the properties (or elements of the array)
+        if (settings.listenonchildren) {
+
+            function convertproperty(x) {
+                // Convert each property into a watched variable
+                let clonedprop = WatchedObject(x, settings);
+    
+                // If the property is not an object, it will not be proxied
+                if (clonedprop.is_proxy !== undefined)
+                    children.push(clonedprop.listener);
+    
+                return clonedprop;
+            }
+    
+            if (Array.isArray(original)) {
+                original = original.map(convertproperty);
+            } else {
+                jsutilslib.processprops(original, convertproperty);
+            }
+        }
 
         // Now create the proxy by instantiating the class
         let proxy = new Proxy(original, {
             get(target, name, receiver) {
-                // Create the listener if it doesn't exist (it is scoped to the current proxy)
-                if (listener === null) {
-                    listener = new ListenerController(proxy, target, settings);
-                }
+                // Set the proxy for the listener (this is a one-time operation, but it is controlled in the function itself)
+                listener.set_proxy(proxy, target);
+
                 // First check if the property is defined for the proxy itself so that we can return it.
                 //   These are "somehow" properties of the proxy that are not proxied to the target.
                 switch (name) {
@@ -228,7 +267,7 @@
                         return listener;
                     case "value":
                         return function() {
-                            return jsutillib.clone(target, function(x) {
+                            return jsutilslib.clone(target, function(x) {
                                 if (is_proxy(x)) {
                                     return x.object();
                                 } 
@@ -250,17 +289,17 @@
                 return rv;
             },
             set(target, name, value, receiver) {
-                // Create the listener if it doesn't exist (it is scoped to the current proxy)
-                if (listener === null) {
-                    listener = new ListenerController(proxy, target, settings);
-                }
+                // Set the proxy for the listener (this is a one-time operation, but it is controlled in the function itself)
+                listener.set_proxy(proxy, target);
+
+                // There are some reserved keywords that cannot be set
                 let reserved = (["value", "listener", "is_proxy", "listen", "unlisten", "addEventListener", "removeEventListener", "dispatchEvent"].includes(name));
                 if (reserved) {
                     throw new Exception('invalid keyword')
                 }
-                if (settings.listenonchildren) {
-                    value = convertobject(value, settings);
-                }
+
+                // Create the watched variable for the value
+                value = WatchedObject(value, settings);
 
                 // We'll set the value and expect that the garbage collector will take care of the old value
                 let retval = Reflect.set(target, name, value, receiver);
@@ -271,8 +310,11 @@
             }
         });
 
+        // Defered setting the parent
+        children.forEach(child => { child.__parent = proxy; });
+
         return proxy;
     }
-    exports._GLOBALS = WatchedVariable({});
-    exports.jsutillib.WatchedVariable = WatchedVariable;
-})(window, document);
+    exports.$watched = WatchedObject({});
+    exports.jsutilslib.WatchedObject = WatchedObject;
+})(window);
