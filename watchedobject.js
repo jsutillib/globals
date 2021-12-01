@@ -22,7 +22,7 @@
     function is_proxy(p) {
         return p !== null && typeof p === "object" && p.is_proxy !== undefined;
     }
-    class ListenerController {
+    class WatchController {
         constructor(settings, subscriptions) {
             this.__subscriptions = subscriptions;
             this.__settings = Object.assign({}, settings);
@@ -46,7 +46,7 @@
                 }
             } else {}
             if (this.__parent !== null) {
-                return [ ...this.__parent.listener.get_proxy_tree(null, this.__proxy), {
+                return [ ...this.__parent.watcher.get_proxy_tree(null, this.__proxy), {
                     p: this.__proxy,
                     n: name
                 } ];
@@ -110,7 +110,7 @@
                     if (bubblemanager && this.__settings.propagatechanges === true) {
                         for (let i = proxy_tree.length; !e.cancelled && i > 0; i--) {
                             let c_proxy = proxy_tree[i - 1].p;
-                            c_proxy.listener.notify(proxy_tree, e);
+                            c_proxy.watcher.notify(proxy_tree, e);
                         }
                     }
                 }
@@ -120,15 +120,16 @@
             }
         }
         addEventListener(type, eventHandler) {
-            var listener = {};
-            listener.type = type;
-            listener.eventHandler = eventHandler;
-            this.__event_listeners.push(listener);
+            this.__event_listeners.push({
+                type: type,
+                eventHandler: eventHandler
+            });
         }
         dispatchEvent(event) {
+            let proxy = this.__proxy;
             this.__event_listeners.forEach(listener => {
                 if (listener.type === event.type) {
-                    listener.eventHandler(event);
+                    listener.eventHandler.call(proxy, event);
                 }
             });
         }
@@ -141,9 +142,9 @@
             if (this.__parent === null) {
                 return this.__subscriptions;
             }
-            return Object.assign({}, this.__subscriptions, this.__parent.listener.get_parent_subscriptions());
+            return Object.assign({}, this.__subscriptions, this.__parent.watcher.get_parent_subscriptions());
         }
-        listen(varnames, event_handler, autocancel = false) {
+        watch(varnames, event_handler, autocancel = false) {
             if (!Array.isArray(varnames)) {
                 varnames = [ varnames ];
             }
@@ -165,7 +166,7 @@
                 });
             }.bind(this));
         }
-        unlisten(varname, eventHandler) {
+        unwatch(varname, eventHandler) {
             if (this.__subscriptions[varname] === undefined) {
                 return;
             }
@@ -193,7 +194,7 @@
             settings.eventtarget = [ settings.eventtarget ];
         }
         let subscriptions = {};
-        let listener = new ListenerController(settings, subscriptions);
+        let watcher = new WatchController(settings, subscriptions);
         let children = [];
         if (settings.cloneobjects) {
             original = jsutilslib.clone(original);
@@ -207,7 +208,7 @@
             }
             function convertproperty(x) {
                 let clonedprop = WatchedObject(x, propsettings);
-                if (clonedprop.is_proxy !== undefined) children.push(clonedprop.listener);
+                if (clonedprop.is_proxy !== undefined) children.push(clonedprop.watcher);
                 return clonedprop;
             }
             if (Array.isArray(original)) {
@@ -218,13 +219,13 @@
         }
         let proxy = new Proxy(original, {
             get(target, name, receiver) {
-                listener.set_proxy(proxy, target);
+                watcher.set_proxy(proxy, target);
                 switch (name) {
                   case "is_proxy":
                     return true;
 
-                  case "listener":
-                    return listener;
+                  case "watcher":
+                    return watcher;
 
                   case "value":
                     return function() {
@@ -241,24 +242,24 @@
                         return target;
                     };
                 }
-                if ([ "listen", "unlisten", "addEventListener", "removeEventListener", "dispatchEvent" ].includes(name)) {
-                    return listener[name].bind(listener);
+                if ([ "watch", "unwatch", "addEventListener", "removeEventListener", "dispatchEvent" ].includes(name)) {
+                    return watcher[name].bind(watcher);
                 }
                 let rv = Reflect.get(target, name, receiver);
                 return rv;
             },
             set(target, name, value, receiver) {
-                listener.set_proxy(proxy, target);
-                let reserved = [ "value", "listener", "is_proxy", "listen", "unlisten", "addEventListener", "removeEventListener", "dispatchEvent" ].includes(name);
+                watcher.set_proxy(proxy, target);
+                let reserved = [ "value", "watcher", "is_proxy", "watch", "unwatch", "addEventListener", "removeEventListener", "dispatchEvent" ].includes(name);
                 if (reserved) {
                     throw new Exception("invalid keyword");
                 }
                 value = WatchedObject(value, settings);
                 if (is_proxy(value)) {
-                    value.listener.__parent = proxy;
+                    value.watcher.__parent = proxy;
                 }
                 let retval = Reflect.set(target, name, value, receiver);
-                listener.__fire_events(name, value);
+                watcher.__fire_events(name, value);
                 return retval;
             }
         });

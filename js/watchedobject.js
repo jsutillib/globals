@@ -31,7 +31,7 @@
     /**
      * Class used to manage the events for the proxy objects. This should be a private class that should not be used directly
      */
-    class ListenerController {
+    class WatchController {
 
         constructor(settings, subscriptions) {
             this.__subscriptions = subscriptions;
@@ -75,7 +75,7 @@
             }
 
             if (this.__parent !== null) {
-                return [ ...this.__parent.listener.get_proxy_tree(null, this.__proxy), {
+                return [ ...this.__parent.watcher.get_proxy_tree(null, this.__proxy), {
                     p: this.__proxy,
                     n: name
                 }];    
@@ -160,7 +160,7 @@
                     if (bubblemanager && (this.__settings.propagatechanges === true)) {
                         for (let i = proxy_tree.length; (!e.cancelled) && (i > 0); i--) {
                             let c_proxy = proxy_tree[i - 1].p;
-                            c_proxy.listener.notify(proxy_tree, e);
+                            c_proxy.watcher.notify(proxy_tree, e);
                         }
                     }
                 }
@@ -171,19 +171,20 @@
             }
         }
 
-        // Add functions to the listener so that it can act as an event dispatcher 
+        // Add functions to the watcher so that it can act as an event dispatcher 
         //  (other objects may be subscribed to these events).
         addEventListener(type, eventHandler) {
-            var listener = {};
-            listener.type = type;
-            listener.eventHandler = eventHandler;
-            this.__event_listeners.push(listener);
+            this.__event_listeners.push({
+                type: type,
+                eventHandler: eventHandler
+            });
         }
 
         dispatchEvent(event) {
+            let proxy = this.__proxy;
             this.__event_listeners.forEach(listener => {
                 if (listener.type === event.type) {
-                    listener.eventHandler(event);
+                    listener.eventHandler.call(proxy, event);
                 }
             });
         }
@@ -199,14 +200,14 @@
             if (this.__parent === null) {
                 return this.__subscriptions;
             }
-            return Object.assign({}, this.__subscriptions, this.__parent.listener.get_parent_subscriptions());
+            return Object.assign({}, this.__subscriptions, this.__parent.watcher.get_parent_subscriptions());
         }
 
-        // Adds a listener for the variables of the object. The listener will be notified when the variable changes
+        // Adds a watcher for the variables of the object. The watcher will be notified when the variable changes
         // @param varname the name of the variable to watch
         // @param eventHandler the callback to call when the variable changes
         // @param autocancel if true, if the subscription is matched, the event will be cancelled in the bubble
-        listen(varnames, event_handler, autocancel = false) {
+        watch(varnames, event_handler, autocancel = false) {
             if (! Array.isArray(varnames)) {
                 varnames = [varnames];
             }
@@ -230,10 +231,10 @@
                 } );
             }.bind(this));
         }
-        // Stops listening for the variables of the object. The listener will no longer be notified when the variable changes
+        // Stops watching for the variables of the object. The watcher will no longer be notified when the variable changes
         // @param varname the name of the variable to stop watching
         // @param eventHandler the callback to call when the variable changes
-        unlisten(varname, eventHandler) {
+        unwatch(varname, eventHandler) {
             if (this.__subscriptions[varname] === undefined) {
                 return;
             }
@@ -264,8 +265,8 @@
             propertiesdepth: -1,
             // Whether to clone objects prior to including it in the proxy tree or not
             cloneobjects: false,
-            // If true, a change to a leave of an object tree (e.g. a.b.c.d = 4) will notify listeners of (a.b.c.d, a.b.c, a.b and a); otherwise only listeners of the triggerer property (i.e. a.b.c.d) will be notified
-            //   This value can be overridden in the listen function, but this is the default value for all listeners.
+            // If true, a change to a leave of an object tree (e.g. a.b.c.d = 4) will notify watchers of (a.b.c.d, a.b.c, a.b and a); otherwise only watchers of the triggerer property (i.e. a.b.c.d) will be notified
+            //   This value can be overridden in the watch function, but this is the default value for all watchers.
             propagatechanges: false,
             // The elements to which the event of a variable change is dispatched
             eventtarget: [ window ],
@@ -285,8 +286,8 @@
         // Class Proxy cannot be extended, so we are using a workaround by using helper object which is scoped
         //   to the function that creates the Proxy (at the end is somehow the same than extending the class,
         //   except for the thing that we need to keep track of the methods that we wanted to be added to the
-        //   proxy object and proxy them to the helper object (i.e. the listener object))
-        let listener = new ListenerController(settings, subscriptions);
+        //   proxy object and proxy them to the helper object (i.e. the watcher object))
+        let watcher = new WatchController(settings, subscriptions);
 
         // In the next phases, we are converting the object, according to the settings (i.e. clone, )
 
@@ -302,7 +303,7 @@
             original = jsutilslib.clone(original);
         }
 
-        // If we are listening on children, we'll convert the properties (or elements of the array)
+        // If we are watching on children, we'll convert the properties (or elements of the array)
         if (settings.propertiesdepth !== 0) {
 
             // If the depth for the properties is limited, let's decrease it by one as we get deeper
@@ -317,7 +318,7 @@
     
                 // If the property is not an object, it will not be proxied
                 if (clonedprop.is_proxy !== undefined)
-                    children.push(clonedprop.listener);
+                    children.push(clonedprop.watcher);
     
                 return clonedprop;
             }
@@ -332,16 +333,16 @@
         // Now create the proxy by instantiating the class
         let proxy = new Proxy(original, {
             get(target, name, receiver) {
-                // Set the proxy for the listener (this is a one-time operation, but it is controlled in the function itself)
-                listener.set_proxy(proxy, target);
+                // Set the proxy for the watcher (this is a one-time operation, but it is controlled in the function itself)
+                watcher.set_proxy(proxy, target);
 
                 // First check if the property is defined for the proxy itself so that we can return it.
                 //   These are "somehow" properties of the proxy that are not proxied to the target.
                 switch (name) {
                     case "is_proxy":
                         return true;
-                    case "listener":
-                        return listener;
+                    case "watcher":
+                        return watcher;
                     case "value":
                         return function() {
                             return jsutilslib.clone(target, function(x) {
@@ -356,9 +357,9 @@
                             return target;
                         }
                 }
-                // These are other functions that are not proxied to the target, but are served by the "listener"
-                if ([ "listen", "unlisten", "addEventListener", "removeEventListener", "dispatchEvent"].includes(name)) {
-                    return listener[name].bind(listener);
+                // These are other functions that are not proxied to the target, but are served by the "watcher"
+                if ([ "watch", "unwatch", "addEventListener", "removeEventListener", "dispatchEvent"].includes(name)) {
+                    return watcher[name].bind(watcher);
                 }
 
                 // Any other property or method is proxied to the target
@@ -366,11 +367,11 @@
                 return rv;
             },
             set(target, name, value, receiver) {
-                // Set the proxy for the listener (this is a one-time operation, but it is controlled in the function itself)
-                listener.set_proxy(proxy, target);
+                // Set the proxy for the watcher (this is a one-time operation, but it is controlled in the function itself)
+                watcher.set_proxy(proxy, target);
 
                 // There are some reserved keywords that cannot be set
-                let reserved = (["value", "listener", "is_proxy", "listen", "unlisten", "addEventListener", "removeEventListener", "dispatchEvent"].includes(name));
+                let reserved = (["value", "watcher", "is_proxy", "watch", "unwatch", "addEventListener", "removeEventListener", "dispatchEvent"].includes(name));
                 if (reserved) {
                     throw new Exception('invalid keyword')
                 }
@@ -379,14 +380,14 @@
                 value = WatchedObject(value, settings);
 
                 if (is_proxy(value)) {
-                    value.listener.__parent = proxy;
+                    value.watcher.__parent = proxy;
                 }
 
                 // We'll set the value and expect that the garbage collector will take care of the old value
                 let retval = Reflect.set(target, name, value, receiver);
 
-                // Now we'll dispatch the event via the listener
-                listener.__fire_events(name, value);
+                // Now we'll dispatch the event via the watcher
+                watcher.__fire_events(name, value);
                 return retval;
             }
         });
