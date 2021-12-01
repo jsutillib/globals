@@ -20,7 +20,7 @@
         exports.jsutilslib = {};
     }
     function is_proxy(p) {
-        return typeof p === "object" && p.is_proxy !== undefined;
+        return p !== null && typeof p === "object" && p.is_proxy !== undefined;
     }
     class ListenerController {
         constructor(settings, subscriptions) {
@@ -33,25 +33,91 @@
             this.__proxy = proxy;
             this.__target = target;
         }
-        __fire_events(name, value, suffix = "") {
-            if (this.__proxy === null) {
-                return false;
-            }
-            if (is_proxy(name)) {
+        get_proxy_tree(name = null, value = null) {
+            if (name === null) {
                 for (let prop in this.__target) {
-                    if (this.__target[prop] === name) {
+                    if (this.__target[prop] === value) {
                         name = prop;
-                        value = this.__proxy[prop];
+                        break;
                     }
                 }
-            }
-            let varname = name;
+                if (name === null) {
+                    throw new Error(`Could not find the value in the properties of the proxy`);
+                }
+            } else {}
             if (this.__parent !== null) {
-                varname = this.__parent.listener.__fire_events(this.__proxy, undefined, `.${name}${suffix}`);
-                varname = `${varname}.${name}`;
+                return [ ...this.__parent.listener.get_proxy_tree(null, this.__proxy), {
+                    p: this.__proxy,
+                    n: name
+                } ];
+            } else {
+                return [ {
+                    p: this.__proxy,
+                    n: name
+                } ];
             }
-            this.notify(varname, value, `${name}${suffix}`);
-            return varname;
+        }
+        __fire_events(name, value) {
+            let proxy_tree = this.get_proxy_tree(name, value);
+            let triggerer = proxy_tree.map(x => x.n).join(".");
+            let e = new CustomEvent(this.__settings.eventtype, {
+                detail: {
+                    var: triggerer,
+                    value: value
+                }
+            });
+            this.dispatchEvent(e);
+            this.__settings.eventtarget.forEach(et => {
+                et.dispatchEvent(e);
+            });
+            this.notify(proxy_tree);
+        }
+        notify(proxy_tree, e = null) {
+            let var_fqn = proxy_tree.map(x => x.n).join(".");
+            let var_name = proxy_tree[proxy_tree.length - 1].n;
+            let proxy = this.__proxy;
+            proxy_tree.pop();
+            let bubblemanager = true;
+            if (e === null) {
+                e = {
+                    target: proxy,
+                    type: "change",
+                    from: var_fqn,
+                    cancelled: false
+                };
+            } else {
+                bubblemanager = false;
+            }
+            let event = {
+                event: e,
+                variable: var_name,
+                fqvn: var_fqn,
+                value: proxy[var_name],
+                stopPropagation: function() {
+                    e.cancelled = true;
+                }
+            };
+            let subscriptions = this.get_parent_subscriptions();
+            for (let k in subscriptions) {
+                let subscription = subscriptions[k];
+                if (subscription.re.test(var_fqn)) {
+                    subscription.callbacks.forEach(function(sub) {
+                        if (e.cancelled) {
+                            return;
+                        }
+                        sub.callback.call(proxy, event);
+                    });
+                    if (bubblemanager && this.__settings.propagatechanges === true) {
+                        for (let i = proxy_tree.length; !e.cancelled && i > 0; i--) {
+                            let c_proxy = proxy_tree[i - 1].p;
+                            c_proxy.listener.notify(proxy_tree, e);
+                        }
+                    }
+                }
+                if (e.cancelled) {
+                    break;
+                }
+            }
         }
         addEventListener(type, eventHandler) {
             var listener = {};
@@ -60,9 +126,6 @@
             this.__event_listeners.push(listener);
         }
         dispatchEvent(event) {
-            if (event.cancelBubble) {
-                return;
-            }
             this.__event_listeners.forEach(listener => {
                 if (listener.type === event.type) {
                     listener.eventHandler(event);
@@ -74,41 +137,20 @@
                 return listener.type !== type || listener.eventHandler !== eventHandler;
             });
         }
-        notify(varname, value, from) {
-            let e = new CustomEvent(this.__settings.eventtype, {
-                detail: {
-                    varname: varname,
-                    value: value,
-                    from: from
-                }
-            });
-            this.dispatchEvent(e);
-            this.__settings.eventtarget.forEach(et => {
-                et.dispatchEvent(e);
-            });
-            let subscriptions = this.get_parent_subscriptions();
-            if (!e.cancelBubble) {
-                for (let k in subscriptions) {
-                    let subscription = subscriptions[k];
-                    if (subscription.re.test(varname)) {
-                        subscription.callbacks.forEach(sub => {
-                            sub(varname, value, from);
-                        });
-                    }
-                }
-            }
-        }
         get_parent_subscriptions() {
             if (this.__parent === null) {
                 return this.__subscriptions;
             }
             return Object.assign({}, this.__subscriptions, this.__parent.listener.get_parent_subscriptions());
         }
-        listen(varnames, eventHandler) {
+        listen(varnames, event_handler, autocancel = false) {
             if (!Array.isArray(varnames)) {
                 varnames = [ varnames ];
             }
             varnames.forEach(function(varname) {
+                if (varname === "") {
+                    varname = "*";
+                }
                 if (this.__subscriptions[varname] === undefined) {
                     let re = varname.replace(".", "\\.").replace("*", ".*").replace("?", "[^.]*");
                     re = `^${re}$`;
@@ -117,7 +159,10 @@
                         callbacks: []
                     };
                 }
-                this.__subscriptions[varname].callbacks.push(eventHandler);
+                this.__subscriptions[varname].callbacks.push({
+                    callback: event_handler,
+                    autocancel: autocancel
+                });
             }.bind(this));
         }
         unlisten(varname, eventHandler) {
@@ -129,17 +174,19 @@
             });
         }
     }
-    let WatchedObject = (original, options = {}) => {
+    let WatchedObject = (original = {}, options = {}) => {
+        if (original === null) {
+            return null;
+        }
         if (typeof original !== "object") {
             return original;
         }
         let defaults = {
-            propertiesdepth: 0,
-            listenonchildren: true,
-            eventtarget: [ window ],
-            eventtype: "watch",
+            propertiesdepth: -1,
             cloneobjects: false,
-            convertproperties: true
+            propagatechanges: false,
+            eventtarget: [ window ],
+            eventtype: "watch"
         };
         let settings = jsutilslib.merge(defaults, options);
         if (!Array.isArray(settings.eventtarget)) {
@@ -151,9 +198,15 @@
         if (settings.cloneobjects) {
             original = jsutilslib.clone(original);
         }
-        if (settings.listenonchildren) {
+        if (settings.propertiesdepth !== 0) {
+            let propsettings = settings;
+            if (settings.propertiesdepth > 0) {
+                propsettings = jsutilslib.merge(settings, {
+                    propertiesdepth: settings.propertiesdepth - 1
+                });
+            }
             function convertproperty(x) {
-                let clonedprop = WatchedObject(x, settings);
+                let clonedprop = WatchedObject(x, propsettings);
                 if (clonedprop.is_proxy !== undefined) children.push(clonedprop.listener);
                 return clonedprop;
             }
@@ -201,6 +254,9 @@
                     throw new Exception("invalid keyword");
                 }
                 value = WatchedObject(value, settings);
+                if (is_proxy(value)) {
+                    value.listener.__parent = proxy;
+                }
                 let retval = Reflect.set(target, name, value, receiver);
                 listener.__fire_events(name, value);
                 return retval;

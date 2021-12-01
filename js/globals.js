@@ -25,7 +25,7 @@
      * @returns true if the object is a proxy
      */
     function is_proxy(p) {
-        return (typeof p === 'object') && (p.is_proxy !== undefined);
+        return (p !== null) && (typeof p === 'object') && (p.is_proxy !== undefined);
     }
 
     /**
@@ -48,34 +48,127 @@
             this.__target = target;
         }
 
-        // This function is used to "fire" the events for the proxy object: both the callbacks for the watched variables and the events for the objects in the DOM
-        //   This function is only for internal purposes (also the class)
-        __fire_events(name, value, suffix = "") {
-            if (this.__proxy === null) {
-                return false;
-            }
-            // If the name is a proxy instead of a variable, we'll try to get which one is it
-            //   ** this is a workaround for internal purposes
-            if (is_proxy(name)) {
+        /**
+         * Function that gets the tree of proxy object; the first element in the array is the top-level proxy object,
+         *   and the last element is the target object.
+         * The main utility for this function is to get the FQN for the proxies, for notification purposes. The original 
+         *   idea was to make that each proxy had its FQN during the creation, but this is not possible because of the
+         *   arrays: the position in the array may change during the time so a FQN object.array.1 for a element in the
+         *   array may change in the time.
+         */
+        get_proxy_tree(name = null, value = null) {
+            if (name === null) {
+                // Let's look for this child in the properties
                 for (let prop in this.__target) {
-                    if (this.__target[prop] === name) {
+                    if (this.__target[prop] === value) {
                         name = prop;
-                        value = this.__proxy[prop];
+                        break;
                     }
                 }
+                // Could not find the child, so it is not my child (it should not happen)
+                if (name === null) {
+                    throw new Error(`Could not find the value in the properties of the proxy`);
+                }
+            } else {
+                // This case is needed, because leaves (which start triggering the events)
+                //   may get non-proxied values that may be the same in multiple properties (e.g. value "3")
             }
-            // Now we'll get the FQN of the variable and fire the events for it
-            let varname = name;
 
-            // The idea is to fire the events from the top-level proxy, so if this proxy has a parent, we'll wait until the parent is done and returns
-            //   the whole FQN; then the FQN of this
             if (this.__parent !== null) {
-                varname = this.__parent.listener.__fire_events(this.__proxy, undefined, `.${name}${suffix}`);
-                varname = `${varname}.${name}`;
+                return [ ...this.__parent.listener.get_proxy_tree(null, this.__proxy), {
+                    p: this.__proxy,
+                    n: name
+                }];    
+            } else {
+                return [ {
+                    p: this.__proxy,
+                    n: name}
+                ];
+            }
+        }
+
+        // This function is used to "fire" the events for the proxy object: both the callbacks for the watched variables and the events for the objects in the DOM
+        //   This function is only for internal purposes (also the class)
+        __fire_events(name, value) {
+
+            let proxy_tree = this.get_proxy_tree(name, value);
+            let triggerer = proxy_tree.map(x => x.n).join(".");
+
+            // We'll create a custom event and will dispatch it to any of the dispachers set by the user in the settings
+            //  and to this object also (first to this object)
+            let e = new CustomEvent(this.__settings.eventtype, {
+                detail: { var: triggerer, value }
+            });
+            this.dispatchEvent(e);
+            this.__settings.eventtarget.forEach(et => {
+                et.dispatchEvent(e);
+            });
+
+            this.notify(proxy_tree);
+        }
+
+        notify(proxy_tree, e = null) {
+            // The last element of the proxy_tree is the proxy object itself
+            let var_fqn = proxy_tree.map(x => x.n).join(".");
+            let var_name = proxy_tree[proxy_tree.length - 1].n;
+            let proxy = this.__proxy;
+            proxy_tree.pop();
+
+            // If the event was not created yet, this is the first notification and so we are generating the bubble of notification (i.e. the notification will be
+            //   sent upwards in the hiearchy); otherwise, we are not in charge of managing the bubble
+            let bubblemanager = true;
+            if (e === null) {
+                e = {
+                    target: proxy,      // The real target is the proxy object that triggered the event
+                    type: "change",     // The type of the event is "change"
+                    from: var_fqn,
+                    cancelled: false
+                }
+            } else {
+                bubblemanager = false;
             }
 
-            this.notify(varname, value, `${name}${suffix}`);
-            return varname;
+            // This is the actual event that we are sending to each callback
+            let event = {
+                event: e,
+                variable: var_name,
+                fqvn: var_fqn,
+                value: proxy[var_name],
+                stopPropagation: function() {
+                    e.cancelled = true;
+                }
+            }
+
+            // Now we get the subscriptions from the parent, because we are allowing that each parent can store subscriptions for his eventual children
+            let subscriptions = this.get_parent_subscriptions();
+
+            for (let k in subscriptions) {
+                let subscription = subscriptions[k];
+
+                // If there are subscriptions for this variable, let's call the callbacks
+                if (subscription.re.test(var_fqn)) {
+                    subscription.callbacks.forEach(function(sub) {
+                        // Once the event is cancelled, stop anything
+                        if (e.cancelled) {
+                            return;
+                        }
+                        // We'll call the callback, by binding the proxy to the callback (to allow accessing the values of the proxy)
+                        sub.callback.call(proxy, event);
+                    });        
+
+                    // If this is the bubble manager, we need to make the event go up in the hierarchy
+                    if (bubblemanager && (this.__settings.propagatechanges === true)) {
+                        for (let i = proxy_tree.length; (!e.cancelled) && (i > 0); i--) {
+                            let c_proxy = proxy_tree[i - 1].p;
+                            c_proxy.listener.notify(proxy_tree, e);
+                        }
+                    }
+                }
+                // Once the event is cancelled, stop anything
+                if (e.cancelled) {
+                    break;
+                }
+            }
         }
 
         // Add functions to the listener so that it can act as an event dispatcher 
@@ -88,9 +181,6 @@
         }
 
         dispatchEvent(event) {
-            if (event.cancelBubble) {
-                return;
-            }
             this.__event_listeners.forEach(listener => {
                 if (listener.type === event.type) {
                     listener.eventHandler(event);
@@ -104,37 +194,6 @@
             });
         }
 
-        // This function is used to notify the listeners of the proxy object that a variable has changed
-        //   The event will be dispatched first, and then the subscriptions
-        notify(varname, value, from) {
-
-            // We'll create a custom event and will dispatch it to any of the dispachers set by the user in the settings
-            //  and to this object also (first to this object)
-            let e = new CustomEvent(this.__settings.eventtype, {
-                detail: { varname, value, from }
-            });
-            this.dispatchEvent(e);
-            this.__settings.eventtarget.forEach(et => {
-                et.dispatchEvent(e);
-            });
-
-            // We'll check the subscriptions of this object and the parent object (because the properties build a
-            //   tree of objects, and subscriptions may be defined for each part of the tree)
-            let subscriptions = this.get_parent_subscriptions();
-
-            if (!e.cancelBubble) {
-                // If any of the subscriptions match the var name, we'll fire the appropriate callback
-                for (let k in subscriptions) {
-                    let subscription = subscriptions[k];
-                    if (subscription.re.test(varname)) {
-                        subscription.callbacks.forEach(sub => {
-                            sub(varname, value, from);
-                        });
-                    }
-                }
-            }
-        }
-
         // Get the subscriptions of the parent object (if any), combined with the subscriptions of this object
         get_parent_subscriptions() {
             if (this.__parent === null) {
@@ -146,16 +205,16 @@
         // Adds a listener for the variables of the object. The listener will be notified when the variable changes
         // @param varname the name of the variable to watch
         // @param eventHandler the callback to call when the variable changes
-        listen(varnames, eventHandler) {
-            // TODO: support for listening for variables that are not created, yet
-            //   e.g. listen to pdf.pages[0].text, but pdf.pages is not set yet; then, when it is set, fire the events
-            // This is important because if we watch (e.g. pdf.pages.text), then set pdf.pages to 0 and then pdf.pages to
-            //   a new object that contains "text" as a property, in the actual state, the listener will be lost because
-            //   it was watching the old object, and not the new one.
+        // @param autocancel if true, if the subscription is matched, the event will be cancelled in the bubble
+        listen(varnames, event_handler, autocancel = false) {
             if (! Array.isArray(varnames)) {
                 varnames = [varnames];
             }
+
             varnames.forEach(function (varname) {
+                if (varname === "") {
+                    varname = "*";
+                }
                 if (this.__subscriptions[varname] === undefined) {
 
                     let re = varname.replace(".", "\\.").replace("*", ".*").replace("?", "[^.]*");
@@ -163,10 +222,12 @@
 
                     this.__subscriptions[varname] = {
                         re: new RegExp(re),
-                        callbacks: []
+                        callbacks: [],
                     };
                 }
-                this.__subscriptions[varname].callbacks.push(eventHandler);
+                this.__subscriptions[varname].callbacks.push({
+                    callback: event_handler, autocancel: autocancel
+                } );
             }.bind(this));
         }
         // Stops listening for the variables of the object. The listener will no longer be notified when the variable changes
@@ -186,7 +247,11 @@
      * Set the function to create the proxy objects. 
      *   - Original procedure from from https://stackoverflow.com/a/69459844/14699733 
      */
-    let WatchedObject = (original, options = {}) => {
+    let WatchedObject = (original = {}, options = {}) => {
+        if (original === null) {
+            return null;
+        }
+
         // Simple variables cannot be proxied
         if (typeof original !== "object") {
             return original;
@@ -194,12 +259,18 @@
 
         // Default values for settings
         let defaults = {
-            propertiesdepth: 0,
-            listenonchildren: true,
-            eventtarget: [ window ],
-            eventtype: 'watch',
+            // The depth of the properties that should be proxied: -1 means all properties, 0 means only the root properties and 1, 2, 3... is related to the relationship of the 
+            //   objects in properties of other objects (e.g. in a.b.c.d, d is in depth 3)
+            propertiesdepth: -1,
+            // Whether to clone objects prior to including it in the proxy tree or not
             cloneobjects: false,
-            convertproperties: true
+            // If true, a change to a leave of an object tree (e.g. a.b.c.d = 4) will notify listeners of (a.b.c.d, a.b.c, a.b and a); otherwise only listeners of the triggerer property (i.e. a.b.c.d) will be notified
+            //   This value can be overridden in the listen function, but this is the default value for all listeners.
+            propagatechanges: false,
+            // The elements to which the event of a variable change is dispatched
+            eventtarget: [ window ],
+            // The event type of the variable change
+            eventtype: 'watch',
         };
 
         // Get the settings for this proxy
@@ -232,11 +303,17 @@
         }
 
         // If we are listening on children, we'll convert the properties (or elements of the array)
-        if (settings.listenonchildren) {
+        if (settings.propertiesdepth !== 0) {
+
+            // If the depth for the properties is limited, let's decrease it by one as we get deeper
+            let propsettings = settings;
+            if (settings.propertiesdepth > 0) {
+                propsettings = jsutilslib.merge(settings, { propertiesdepth: settings.propertiesdepth - 1 });
+            }
 
             function convertproperty(x) {
                 // Convert each property into a watched variable
-                let clonedprop = WatchedObject(x, settings);
+                let clonedprop = WatchedObject(x, propsettings);
     
                 // If the property is not an object, it will not be proxied
                 if (clonedprop.is_proxy !== undefined)
@@ -300,6 +377,10 @@
 
                 // Create the watched variable for the value
                 value = WatchedObject(value, settings);
+
+                if (is_proxy(value)) {
+                    value.listener.__parent = proxy;
+                }
 
                 // We'll set the value and expect that the garbage collector will take care of the old value
                 let retval = Reflect.set(target, name, value, receiver);
