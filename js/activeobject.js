@@ -38,7 +38,9 @@
 
             // Duplicate the settings to avoid modifying the original settings
             this.__settings = Object.assign({}, settings);
+            /*
             this.__event_listeners = [];
+            */
             this.__parent = null;
         }
 
@@ -90,8 +92,14 @@
         // This function is used to "fire" the events for the proxy object: both the callbacks for the watched variables and the events for the objects in the DOM
         //   This function is only for internal purposes (also the class)
         __fire_events(name, value) {
+            // We are not subscribing to the values managed by the class, because they are not always managed in the same way (e.g. length in arrays is updated when increased but not when removing one element)
+            if (this.__target.__proto__[name] !== undefined) {
+                return;
+            }
 
             let proxy_tree = this.get_proxy_tree(name, value);
+
+            /*
             let triggerer = proxy_tree.map(x => x.n).join(".");
 
             // We'll create a custom event and will dispatch it to any of the dispachers set by the user in the settings
@@ -103,6 +111,7 @@
             this.__settings.eventtarget.forEach(et => {
                 et.dispatchEvent(e);
             });
+            */
 
             this.notify(proxy_tree);
         }
@@ -146,6 +155,7 @@
                 let subscription = subscriptions[k];
 
                 // If there are subscriptions for this variable, let's call the callbacks
+                console.log(`testing ${var_fqn} to ${k} (${subscription.re})`);
                 if (subscription.re.test(var_fqn)) {
                     subscription.callbacks.forEach(function(sub) {
                         // Once the event is cancelled, stop anything
@@ -171,6 +181,7 @@
             }
         }
 
+        /*
         // Add functions to the watcher so that it can act as an event dispatcher 
         //  (other objects may be subscribed to these events).
         addEventListener(type, eventHandler) {
@@ -194,6 +205,7 @@
                 return listener.type !== type || listener.eventHandler !== eventHandler;
             });
         }
+        */
 
         // Get the subscriptions of the parent object (if any), combined with the subscriptions of this object
         get_parent_subscriptions() {
@@ -218,7 +230,7 @@
                 }
                 if (this.__subscriptions[varname] === undefined) {
 
-                    let re = varname.replace(".", "\\.").replace("*", ".*").replace("?", "[^.]*");
+                    let re = varname.replaceAll(".", "\\.").replaceAll("*", ".*").replaceAll("?", "[^.]*");
                     re = `^${re}$`
 
                     this.__subscriptions[varname] = {
@@ -248,7 +260,7 @@
      * Set the function to create the proxy objects. 
      *   - Original procedure from from https://stackoverflow.com/a/69459844/14699733 
      */
-    let WatchedObject = (original = {}, options = {}) => {
+    let ActiveObject = (original = {}, options = {}) => {
         if (original === null) {
             return null;
         }
@@ -268,10 +280,12 @@
             // If true, a change to a leave of an object tree (e.g. a.b.c.d = 4) will notify watchers of (a.b.c.d, a.b.c, a.b and a); otherwise only watchers of the triggerer property (i.e. a.b.c.d) will be notified
             //   This value can be overridden in the watch function, but this is the default value for all watchers.
             propagatechanges: false,
+            /*
             // The elements to which the event of a variable change is dispatched
             eventtarget: [ window ],
             // The event type of the variable change
             eventtype: 'watch',
+            */
         };
 
         // Get the settings for this proxy
@@ -291,7 +305,7 @@
 
         // In the next phases, we are converting the object, according to the settings (i.e. clone, )
 
-        // Let's prepare an array for the eventual properties that may have been converted into WatchedObjects,
+        // Let's prepare an array for the eventual properties that may have been converted into ActiveObjects,
         //   so that we can set the parent for them. We cannot set the parent because the object is not yet
         //   created, when the properties are being converted.
         //
@@ -314,7 +328,7 @@
 
             function convertproperty(x) {
                 // Convert each property into a watched variable
-                let clonedprop = WatchedObject(x, propsettings);
+                let clonedprop = ActiveObject(x, propsettings);
     
                 // If the property is not an object, it will not be proxied
                 if (clonedprop.is_proxy !== undefined)
@@ -358,7 +372,7 @@
                         }
                 }
                 // These are other functions that are not proxied to the target, but are served by the "watcher"
-                if ([ "watch", "unwatch", "addEventListener", "removeEventListener", "dispatchEvent"].includes(name)) {
+                if ([ "watch", "unwatch" /*, "addEventListener", "removeEventListener", "dispatchEvent" */].includes(name)) {
                     return watcher[name].bind(watcher);
                 }
 
@@ -371,13 +385,13 @@
                 watcher.set_proxy(proxy, target);
 
                 // There are some reserved keywords that cannot be set
-                let reserved = (["value", "watcher", "is_proxy", "watch", "unwatch", "addEventListener", "removeEventListener", "dispatchEvent"].includes(name));
+                let reserved = (["value", "watcher", "is_proxy", "watch", "unwatch", /* "addEventListener", "removeEventListener", "dispatchEvent" */].includes(name));
                 if (reserved) {
                     throw new Exception('invalid keyword')
                 }
 
                 // Create the watched variable for the value
-                value = WatchedObject(value, settings);
+                value = ActiveObject(value, settings);
 
                 if (is_proxy(value)) {
                     value.watcher.__parent = proxy;
@@ -397,6 +411,7 @@
 
         return proxy;
     }
-    exports.$watched = WatchedObject({});
-    exports.jsutilslib.WatchedObject = WatchedObject;
+    exports.$watched = ActiveObject({});
+    exports.jsutilslib.ActiveObject = ActiveObject;
+    exports.jsutilslib.is_proxy = is_proxy;
 })(window);
