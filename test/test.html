@@ -1,0 +1,140 @@
+<html>
+    <head>
+    <title>Test</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/gh/jsutilslib/common@main/common.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.0.2/css/bootstrap.min.css">
+    <script>
+        window.jsutilslib = {};
+    </script>
+    <script src="../../common/js/utils.js"></script>
+    <script src="../js/ActiveObject.js"></script>
+    <style>
+        code {
+            display: block;
+            white-space: pre !important;
+            background-color: #ccc;;
+            padding: 10px;
+            border: 1px solid #ccc;
+            overflow: auto;
+            color: #000;
+        }
+    </style>
+    </head>
+    <body>
+    <h1>WatchedVariable</h1>
+    <example>
+<textarea id="info1" rows=5 cols=50></textarea>
+<script>
+let myVar = { a: 2 };
+let watchedVariable = jsutilslib.ActiveObject(myVar);
+watchedVariable.watch('a', function(e) {
+
+    document.querySelector('#info1').value += `${e.variable} changed to ` + JSON.stringify(e.value) + `\n`;
+});
+watchedVariable.watch('b', function(e) {
+    document.querySelector('#info1').value += `${e.variable} changed to ` + JSON.stringify(e.value) + `\n`;
+});
+watchedVariable.a = 3;
+setTimeout(function() {
+    watchedVariable.a = "message from other function"
+}, 3000);
+setTimeout(function() {
+    watchedVariable.a = { b: "message from other function" }
+}, 5000);
+</script>
+</example>
+    <h1>Complex example</h1>
+<example>
+<textarea id="info2" rows=5 cols=50></textarea>
+<script>
+let ex = {
+    a: {
+        b: {
+            c: {
+                d: {
+                    _e: "simple e"
+                },
+                _d: "simple d"
+            },
+            _c: "simple c"
+        },
+        _b: "simple b"
+    },
+    _a: "simple a"
+}
+let wex = jsutilslib.ActiveObject(ex, {propagatechanges: true});
+wex.watch('a', function(e) {
+    document.querySelector('#info2').value += `${e.variable} changed to ` + JSON.stringify(e.value) + `\n`;
+});
+wex.watch('*.b', function(e) {
+    document.querySelector('#info2').value += `${e.variable} changed to ` + JSON.stringify(e.value) + `\n`;
+});
+setTimeout(function() {
+    wex.a.b.c = "message from other function"
+}, 3000);
+</script>
+</example>
+<h1>Coordination example</h1>
+<example>
+<div class="trivial">
+    <h2>placeholder for trivia questions</h2>
+    
+</div>
+<textarea id="info3" rows=5 cols=50></textarea>
+<script>
+let trivial = jsutilslib.ActiveObject({}, {propagatechanges: true});
+setTimeout(function() {
+    console.log('getting questions');
+    fetch("https://opentdb.com/api.php?amount=25&difficulty=easy&type=multiple").then(function(response) {
+        response.json().then(function(data) {
+            if (data.response_code == 0) {
+                document.querySelector('#info3').value += `data successfully retrieved\n`;
+                trivial.questions = data.results;
+            } else {
+                document.querySelector('#info3').value += `failed to retrieve data\n`;
+            }
+        })
+    })
+}, 0);
+trivial.watch('questions', function(e) {
+    for (let i in this[e.variable]) {
+        let question = this[e.variable][i];
+        let select = jsutilslib.tag(`select`);
+        for (let answer of [ ...question.incorrect_answers, question.correct_answer ].sort((x) => (Math.random() - 0.5))) {
+            select.append(jsutilslib.tag(`option`, answer));
+        }
+        document.querySelector('.trivial').append(
+            jsutilslib.tag(`p#${i}.question`, question.question)
+            ._append(
+                jsutilslib.tag('br')
+            )._append(select)
+        );
+        question.response = null;
+    }
+}, true)
+trivial.watch('*.response', function(e) {
+    // We do not want to propagate variables to the parent
+    console.log(`variable ${e.variable} changed`);
+    e.stopPropagation();
+})
+</script>
+</example>
+    </body>
+    <script>
+        $(function() {
+            $('example').each(function() {
+                // This is the code that should be included in the page
+                let $codeinhtml = $(this).clone();
+                let $code = $("<code>").append($($(this).clone().html()));
+                $code.find('p').remove();
+                $code.text($code.html().trim().split('\n').filter((x) => x.trim() != '').join('\n'));
+
+                $codeinhtml.find('script').remove();
+                $(this).replaceWith($code);
+                let $newcode = $($codeinhtml.html()).insertBefore($code);
+            })
+        })
+    </script>
+</html>
+    

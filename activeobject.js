@@ -68,7 +68,7 @@
             let var_name = proxy_tree[proxy_tree.length - 1].n;
             let proxy = this.__proxy;
             proxy_tree.pop();
-            let bubblemanager = true;
+            let havetonotifyparents = true;
             if (e === null) {
                 e = {
                     target: proxy,
@@ -77,7 +77,7 @@
                     cancelled: false
                 };
             } else {
-                bubblemanager = false;
+                havetonotifyparents = false;
             }
             let event = {
                 event: e,
@@ -91,7 +91,6 @@
             let subscriptions = this.get_parent_subscriptions();
             for (let k in subscriptions) {
                 let subscription = subscriptions[k];
-                console.log(`testing ${var_fqn} to ${k} (${subscription.re})`);
                 if (subscription.re.test(var_fqn)) {
                     subscription.callbacks.forEach(function(sub) {
                         if (e.cancelled) {
@@ -99,15 +98,15 @@
                         }
                         sub.callback.call(proxy, event);
                     });
-                    if (bubblemanager && this.__settings.propagatechanges === true) {
-                        for (let i = proxy_tree.length; !e.cancelled && i > 0; i--) {
-                            let c_proxy = proxy_tree[i - 1].p;
-                            c_proxy.watcher.notify(proxy_tree, e);
-                        }
-                    }
                 }
                 if (e.cancelled) {
                     break;
+                }
+            }
+            if (havetonotifyparents && this.__settings.propagatechanges === true) {
+                for (let i = proxy_tree.length; !e.cancelled && i > 0; i--) {
+                    let c_proxy = proxy_tree[i - 1].p;
+                    c_proxy.watcher.notify(proxy_tree, e);
                 }
             }
         }
@@ -139,13 +138,20 @@
                 });
             }.bind(this));
         }
-        unwatch(varname, eventHandler) {
+        unwatch(varname, eventHandler = null) {
             if (this.__subscriptions[varname] === undefined) {
                 return;
             }
-            this.__subscriptions[varname].callbacks.filter(function(e) {
-                return e !== eventHandler;
-            });
+            if (eventHandler === null) {
+                this.__subscriptions[varname].callbacks = [];
+            } else {
+                this.__subscriptions[varname].callbacks.filter(function(e) {
+                    return e !== eventHandler;
+                });
+            }
+        }
+        set_settings(settings) {
+            this.__settings = settings;
         }
     }
     let ActiveObject = (original = {}, options = {}) => {
@@ -161,9 +167,6 @@
             propagatechanges: false
         };
         let settings = jsutilslib.merge(defaults, options);
-        if (!Array.isArray(settings.eventtarget)) {
-            settings.eventtarget = [ settings.eventtarget ];
-        }
         let subscriptions = {};
         let watcher = new WatchController(settings, subscriptions);
         let children = [];
@@ -208,10 +211,26 @@
                         });
                     };
 
+                  case "reconfigure":
+                    return function(options, reconfigurechildren = true) {
+                        settings = jsutilslib.merge(settings, options);
+                        watcher.set_settings(settings);
+                        if (reconfigurechildren) {
+                            for (let p in target) {
+                                if (is_proxy(target[p])) {
+                                    target[p].reconfigure(options, reconfigurechildren);
+                                }
+                            }
+                        }
+                    };
+
                   case "object":
                     return function() {
                         return target;
                     };
+
+                  case "settings":
+                    return jsutilslib.clone(settings);
                 }
                 if ([ "watch", "unwatch" ].includes(name)) {
                     return watcher[name].bind(watcher);

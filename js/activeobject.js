@@ -125,7 +125,7 @@
 
             // If the event was not created yet, this is the first notification and so we are generating the bubble of notification (i.e. the notification will be
             //   sent upwards in the hiearchy); otherwise, we are not in charge of managing the bubble
-            let bubblemanager = true;
+            let havetonotifyparents = true;
             if (e === null) {
                 e = {
                     target: proxy,      // The real target is the proxy object that triggered the event
@@ -134,7 +134,7 @@
                     cancelled: false
                 }
             } else {
-                bubblemanager = false;
+                havetonotifyparents = false;
             }
 
             // This is the actual event that we are sending to each callback
@@ -155,7 +155,6 @@
                 let subscription = subscriptions[k];
 
                 // If there are subscriptions for this variable, let's call the callbacks
-                console.log(`testing ${var_fqn} to ${k} (${subscription.re})`);
                 if (subscription.re.test(var_fqn)) {
                     subscription.callbacks.forEach(function(sub) {
                         // Once the event is cancelled, stop anything
@@ -165,18 +164,18 @@
                         // We'll call the callback, by binding the proxy to the callback (to allow accessing the values of the proxy)
                         sub.callback.call(proxy, event);
                     });        
-
-                    // If this is the bubble manager, we need to make the event go up in the hierarchy
-                    if (bubblemanager && (this.__settings.propagatechanges === true)) {
-                        for (let i = proxy_tree.length; (!e.cancelled) && (i > 0); i--) {
-                            let c_proxy = proxy_tree[i - 1].p;
-                            c_proxy.watcher.notify(proxy_tree, e);
-                        }
-                    }
                 }
                 // Once the event is cancelled, stop anything
                 if (e.cancelled) {
                     break;
+                }
+            }
+
+            // If this is the bubble manager, we need to make the event go up in the hierarchy
+            if (havetonotifyparents && (this.__settings.propagatechanges === true)) {
+                for (let i = proxy_tree.length; (!e.cancelled) && (i > 0); i--) {
+                    let c_proxy = proxy_tree[i - 1].p;
+                    c_proxy.watcher.notify(proxy_tree, e);
                 }
             }
         }
@@ -245,14 +244,24 @@
         }
         // Stops watching for the variables of the object. The watcher will no longer be notified when the variable changes
         // @param varname the name of the variable to stop watching
-        // @param eventHandler the callback to call when the variable changes
-        unwatch(varname, eventHandler) {
+        // @param eventHandler the callback to call when the variable changes (if null, removes any handler for that varname)
+        unwatch(varname, eventHandler = null) {
             if (this.__subscriptions[varname] === undefined) {
                 return;
             }
-            this.__subscriptions[varname].callbacks.filter(function(e) {
-                return e !== eventHandler;
-            });
+            if (eventHandler === null) {
+                this.__subscriptions[varname].callbacks = [];
+            } else {
+                this.__subscriptions[varname].callbacks.filter(function(e) {
+                    return e !== eventHandler;
+                });
+            }
+        }
+
+        // Sets the new settings
+        set_settings(settings) {
+            // They have been computed in the parent
+            this.__settings = settings;
         }
     }
 
@@ -290,9 +299,12 @@
 
         // Get the settings for this proxy
         let settings = jsutilslib.merge(defaults, options);
+
+        /*
         if (!Array.isArray(settings.eventtarget)) {
             settings.eventtarget = [ settings.eventtarget ];
         }
+        */
 
         // Prepare the subscriptions for this call
         let subscriptions = {};
@@ -366,10 +378,27 @@
                                 return x;
                             });
                         }
+                    case "reconfigure":
+                        return function(options, reconfigurechildren = true) {
+                            // Recompute the settings for this object and transfer them to the watcher
+                            settings = jsutilslib.merge(settings, options);
+                            watcher.set_settings(settings);
+
+                            if (reconfigurechildren) {
+                                // Recompute the settings for the children and transfer them to the watcher
+                                for (let p in target) {
+                                    if (is_proxy(target[p])) {
+                                        target[p].reconfigure(options, reconfigurechildren);
+                                    }
+                                }
+                            }
+                        };
                     case "object":
                         return function() {
                             return target;
                         }
+                    case "settings":
+                        return jsutilslib.clone(settings);
                 }
                 // These are other functions that are not proxied to the target, but are served by the "watcher"
                 if ([ "watch", "unwatch" /*, "addEventListener", "removeEventListener", "dispatchEvent" */].includes(name)) {
