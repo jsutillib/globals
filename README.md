@@ -79,7 +79,7 @@ The preferred method to use _ActiveObject_ is to get it from a CDN:
 
 > Library [`jsutilslib/common`](https://github.com/jsutilslib/common) is a prerrequisite for this library.
 
-* Please consider using the while library [jsutils](https://github.com/jsutilslib/jsutilslib).
+* Please consider using the whole library [jsutils](https://github.com/jsutilslib/jsutilslib).
 
 ### From source
 
